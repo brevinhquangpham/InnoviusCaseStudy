@@ -1,5 +1,28 @@
+"""
+Company Comparison Tool
+----------------------
+A Streamlit application for comparing companies based on their descriptions using NLP embeddings.
+The app allows users to:
+1. Select and compare two companies
+2. View similarity scores
+3. Find similar companies
+4. Analyze company details and categories
+
+Dependencies:
+    - streamlit
+    - pandas
+    - numpy
+    - sentence-transformers
+    - scikit-learn
+    - plotly
+
+Author: Brevin Pham
+Date: 2024
+"""
+
 import os
 from functools import lru_cache
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -9,13 +32,27 @@ import streamlit as st
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
-# Configure page to use wide mode by default
+# ---- Configuration ----
 st.set_page_config(layout="wide", page_title="Company Comparison Tool")
 
+# ---- Type Definitions ----
+CompanyData = Dict[str, Union[str, float, np.ndarray]]
+CompanyInfo = List[Dict[str, Union[str, int]]]
+FilteredCompanies = List[Dict[str, Union[str, int]]]
+DataFrameResult = Tuple[
+    Optional[pd.DataFrame], Optional[CompanyInfo], Optional[List[str]]
+]
 
-# Load model and data
+
+# ---- Data Loading Functions ----
 @st.cache_resource
-def load_model():
+def load_model() -> Optional[SentenceTransformer]:
+    """
+    Load the sentence transformer model with caching.
+
+    Returns:
+        Optional[SentenceTransformer]: Loaded model or None if loading fails
+    """
     try:
         return SentenceTransformer("all-MiniLM-L6-v2")
     except Exception as e:
@@ -24,30 +61,32 @@ def load_model():
 
 
 @st.cache_data
-def load_data():
-    try:
-        # Check if 'output.pkl' exists; if not, attempt to combine parts
-        if os.path.exists("part1.pkl") and os.path.exists("part2.pkl"):
+def load_data() -> DataFrameResult:
+    """
+    Load and preprocess company data from pickle files.
+    Attempts to combine part1.pkl and part2.pkl if output.pkl doesn't exist.
 
-            # Load part1.pkl and part2.pkl
+    Returns:
+        Tuple containing:
+        - DataFrame or None: Processed company data
+        - List[Dict] or None: Company info for dropdowns
+        - List[str] or None: Category list
+    """
+    try:
+        # Combine split files if necessary
+        if os.path.exists("part1.pkl") and os.path.exists("part2.pkl"):
             part1 = pd.read_pickle("part1.pkl")
             part2 = pd.read_pickle("part2.pkl")
-
-            # Combine the DataFrames
             df = pd.concat([part1, part2], axis=0)
-
-            # Save combined DataFrame as 'output.pkl' for future use
             df.to_pickle("output.pkl")
             st.success(
                 "Successfully combined 'part1.pkl' and 'part2.pkl' into 'output.pkl'."
             )
         else:
-            st.error(
-                "Data file 'output.pkl' not found, and parts 'part1.pkl'/'part2.pkl' are missing!"
-            )
+            st.error("Required data files not found!")
             return None, None, None
 
-        # Check if required columns exist
+        # Validate required columns
         required_columns = [
             "Organization Id",
             "Name",
@@ -59,9 +98,8 @@ def load_data():
             st.error(f"Missing required columns: {missing_columns}")
             return None, None, None
 
-        # Handle missing values in Top Level Category
+        # Process data
         df["Top Level Category"] = df["Top Level Category"].fillna("Uncategorized")
-
         company_info = df[["Organization Id", "Name", "Top Level Category"]].to_dict(
             "records"
         )
@@ -74,9 +112,19 @@ def load_data():
         return None, None, None
 
 
-# Cache similarity calculations
+# ---- Similarity Calculation Functions ----
 @st.cache_data
-def get_company_similarity_cache(company1_id, company2_id):
+def get_company_similarity_cache(company1_id: int, company2_id: int) -> float:
+    """
+    Calculate similarity between two companies using cached embeddings.
+
+    Args:
+        company1_id: First company's ID
+        company2_id: Second company's ID
+
+    Returns:
+        float: Similarity score between 0 and 1
+    """
     df = load_data()[0]
     company1_data = df[df["Organization Id"] == company1_id].iloc[0]
     company2_data = df[df["Organization Id"] == company2_id].iloc[0]
@@ -84,17 +132,25 @@ def get_company_similarity_cache(company1_id, company2_id):
     embedding_1 = company1_data["embeddings"]
     embedding_2 = company2_data["embeddings"]
 
-    if embedding_1.ndim == 1:
-        embedding_1 = embedding_1.reshape(1, -1)
-    if embedding_2.ndim == 1:
-        embedding_2 = embedding_2.reshape(1, -1)
+    # Reshape embeddings if necessary
+    embedding_1 = embedding_1.reshape(1, -1) if embedding_1.ndim == 1 else embedding_1
+    embedding_2 = embedding_2.reshape(1, -1) if embedding_2.ndim == 1 else embedding_2
 
     return float(cosine_similarity(embedding_1, embedding_2)[0][0])
 
 
-# Cache similar companies calculation
 @st.cache_data
-def get_similar_companies_cache(company_id, top_n=5):
+def get_similar_companies_cache(company_id: int, top_n: int = 5) -> List[Dict]:
+    """
+    Find the top N most similar companies to a given company.
+
+    Args:
+        company_id: Target company's ID
+        top_n: Number of similar companies to return
+
+    Returns:
+        List[Dict]: List of similar companies with their details
+    """
     df = load_data()[0]
     company = df[df["Organization Id"] == company_id].iloc[0]
     company_embedding = company["embeddings"].reshape(1, -1)
@@ -106,33 +162,38 @@ def get_similar_companies_cache(company_id, top_n=5):
     # Get top N similar companies (excluding self)
     similar_indices = np.argsort(similarities)[::-1][1 : top_n + 1]
 
-    similar_companies = []
-    for idx in similar_indices:
-        row = df.iloc[idx]
-        similar_companies.append(
-            {
-                "id": row["Organization Id"],
-                "name": row["Name"],
-                "category": row.get("Top Level Category", row.get("No Category Found")),
-                "similarity": similarities[idx],
-                "description": row.get(
-                    "Description",
-                    row.get(
-                        "Sourcscrub Description",
-                        row.get("Description.1", "No Description Found"),
-                    ),
+    return [
+        {
+            "id": df.iloc[idx]["Organization Id"],
+            "name": df.iloc[idx]["Name"],
+            "category": df.iloc[idx].get("Top Level Category", "No Category Found"),
+            "similarity": similarities[idx],
+            "description": df.iloc[idx].get(
+                "Description",
+                df.iloc[idx].get(
+                    "Sourcscrub Description",
+                    df.iloc[idx].get("Description.1", "No Description Found"),
                 ),
-                "employee_count": row.get("Employee Count", "N/A"),
-                "website": row.get("Website", "N/A"),
-            }
-        )
+            ),
+            "employee_count": df.iloc[idx].get("Employee Count", "N/A"),
+            "website": df.iloc[idx].get("Website", "N/A"),
+        }
+        for idx in similar_indices
+    ]
 
-    return similar_companies
 
+# ---- UI Helper Functions ----
+def display_company_details(company_data: Dict) -> None:
+    """
+    Display company details in a consistent format.
 
-def display_company_details(company_data):
-    """Helper function to display company details consistently"""
-    st.write(f"**Category:** {company_data['Top Level Category']}")
+    Args:
+        company_data: Dictionary containing company information
+    """
+    category = company_data["Top Level Category"]
+    if category == "nan":
+        category = "N/A"
+    st.write(f"**Category:** {category}")
     st.write(f"**Employees:** {company_data.get('Employee Count', 'N/A')}")
     st.write(f"**Website:** {company_data.get('Website', 'N/A')}")
 
@@ -146,9 +207,17 @@ def display_company_details(company_data):
             st.write(company_data["Description.1"])
 
 
-def create_similarity_gauge(similarity):
-    """Helper function to create similarity gauge"""
-    fig = go.Figure(
+def create_similarity_gauge(similarity: float) -> go.Figure:
+    """
+    Create a gauge chart for displaying similarity scores.
+
+    Args:
+        similarity: Similarity score between 0 and 1
+
+    Returns:
+        plotly.graph_objects.Figure: Gauge chart figure
+    """
+    return go.Figure(
         go.Indicator(
             mode="gauge+number",
             value=similarity * 100,
@@ -169,9 +238,29 @@ def create_similarity_gauge(similarity):
                 },
             },
         )
-    )
-    fig.update_layout(height=300)
-    return fig
+    ).update_layout(height=300)
+
+
+def filter_companies(
+    company_info: List[Dict], category: str, search_term: str
+) -> FilteredCompanies:
+    """
+    Filter companies based on category and search term.
+
+    Args:
+        company_info: List of company information dictionaries
+        category: Category to filter by
+        search_term: Search term to filter company names
+
+    Returns:
+        FilteredCompanies: Filtered list of companies
+    """
+    filtered = company_info
+    if category != "All":
+        filtered = [c for c in filtered if c["Top Level Category"] == category]
+    if search_term:
+        filtered = [c for c in filtered if search_term.lower() in c["Name"].lower()]
+    return filtered
 
 
 def main():
@@ -188,48 +277,35 @@ def main():
 
         df, company_info, categories = result
 
-    # Sidebar filters and search
+    # Sidebar debug information
     with st.sidebar:
-        st.header("Filters and Search")
-
-        # Category filter
-        selected_category = st.selectbox("Filter by Category", categories)
-
-        # Search box
-        search_term = st.text_input("Search companies", "")
-
-        # Debug information in expander
-        with st.expander("Debug Information"):
+        st.header("Debug Information")
+        with st.expander("Debug Details"):
             st.write(f"Total companies: {len(df)}")
             st.write(f"Available columns: {df.columns.tolist()}")
             st.write(
                 f"Memory usage: {df.memory_usage(deep=True).sum() / 1024**2:.2f} MB"
             )
 
-    # Filter companies based on category and search
-    filtered_companies = company_info
-    if selected_category != "All":
-        filtered_companies = [
-            c
-            for c in filtered_companies
-            if c["Top Level Category"] == selected_category
-        ]
-    if search_term:
-        filtered_companies = [
-            c for c in filtered_companies if search_term.lower() in c["Name"].lower()
-        ]
-
-    # Main content area
     col1, col2 = st.columns(2)
 
-    # Company selection and display
     with col1:
         st.subheader("Company 1")
+
+        # Independent filters for Company 1
+        selected_category_1 = st.selectbox("Filter by Category", categories, key="cat1")
+        search_term_1 = st.text_input("Search companies", "", key="search1")
+
+        # Filter companies for Company 1
+        filtered_companies_1 = filter_companies(
+            company_info, selected_category_1, search_term_1
+        )
+
         company1 = st.selectbox(
             "Select first company",
-            options=[c["Organization Id"] for c in filtered_companies],
+            options=[c["Organization Id"] for c in filtered_companies_1],
             format_func=lambda x: next(
-                c["Name"] for c in filtered_companies if c["Organization Id"] == x
+                c["Name"] for c in filtered_companies_1 if c["Organization Id"] == x
             ),
         )
 
@@ -237,13 +313,24 @@ def main():
             company1_data = df[df["Organization Id"] == company1].iloc[0]
             display_company_details(company1_data)
 
+    # Company 2 selection and display
     with col2:
         st.subheader("Company 2")
+
+        # Independent filters for Company 2
+        selected_category_2 = st.selectbox("Filter by Category", categories, key="cat2")
+        search_term_2 = st.text_input("Search companies", "", key="search2")
+
+        # Filter companies for Company 2
+        filtered_companies_2 = filter_companies(
+            company_info, selected_category_2, search_term_2
+        )
+
         company2 = st.selectbox(
             "Select second company",
-            options=[c["Organization Id"] for c in filtered_companies],
+            options=[c["Organization Id"] for c in filtered_companies_2],
             format_func=lambda x: next(
-                c["Name"] for c in filtered_companies if c["Organization Id"] == x
+                c["Name"] for c in filtered_companies_2 if c["Organization Id"] == x
             ),
             key="company2",
         )

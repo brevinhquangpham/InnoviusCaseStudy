@@ -1,3 +1,4 @@
+import warnings
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
@@ -10,25 +11,57 @@ from transformers import AutoTokenizer
 
 from text_preprocessing_helpers import text_preprocessing_pipeline
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
-tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+# Initialize model and tokenizer
+warnings.simplefilter(action="ignore", category=pd.errors.PerformanceWarning)
 tqdm.pandas()
 
 
-def ingest_data(file_path):
+def ingest_data(file_path: str) -> pd.DataFrame:
+    """
+    Load company data from an Excel file.
+
+    Args:
+        file_path (str): Path to the Excel file containing company data.
+
+    Returns:
+        pd.DataFrame: Loaded DataFrame containing company information.
+    """
     df = pd.read_excel(file_path)
     return df
 
 
-def split_into_chunks(text, tokenizer, max_length=512):
+def split_into_chunks(text: str, tokenizer, max_length: int = 512) -> list:
+    """
+    Split text into chunks that can be processed by the model.
+
+    Args:
+        text (str): Input text to be split into chunks.
+        tokenizer: HuggingFace tokenizer instance.
+        max_length (int, optional): Maximum length of each chunk in tokens. Defaults to 512.
+
+    Returns:
+        list: List of text chunks, each within the token limit.
+    """
     tokens = tokenizer.tokenize(text)
     chunks = [tokens[i : i + max_length] for i in range(0, len(tokens), max_length)]
     return [tokenizer.convert_tokens_to_string(chunk) for chunk in chunks]
 
 
-def process_chunk(chunk_data):
+def process_chunk(chunk_data: tuple) -> pd.DataFrame:
+    """
+    Process a chunk of data to generate embeddings for text columns.
+
+    This function is designed to run in parallel, with each worker process having
+    its own model instance.
+
+    Args:
+        chunk_data (tuple): Tuple containing (DataFrame chunk, text columns to process, batch size).
+
+    Returns:
+        pd.DataFrame: Processed chunk with added embeddings column.
+    """
     chunk, text_columns, batch_size = chunk_data
-    # Initialize the model and tokenizer inside the worker process
+    # Initialize the model inside the worker process
     model = SentenceTransformer("all-MiniLM-L6-v2")
 
     # Concatenate text columns
@@ -46,7 +79,6 @@ def process_chunk(chunk_data):
         leave=False,
     ):
         batch_texts = processed_texts[i : i + batch_size]
-        # Encode batch of texts at once
         batch_embeddings = model.encode(
             batch_texts,
             batch_size=batch_size,
@@ -59,7 +91,18 @@ def process_chunk(chunk_data):
     return chunk
 
 
-def calculate_embedding(text, tokenizer, model):
+def calculate_embedding(text: str, tokenizer, model) -> np.ndarray:
+    """
+    Calculate embedding for a text string, handling long texts by chunking.
+
+    Args:
+        text (str): Input text to generate embedding for.
+        tokenizer: HuggingFace tokenizer instance.
+        model: SentenceTransformer model instance.
+
+    Returns:
+        np.ndarray: Mean embedding vector across all chunks of the input text.
+    """
     tokens = tokenizer.tokenize(text)
     max_length = 512
     chunks = [tokens[i : i + max_length] for i in range(0, len(tokens), max_length)]
@@ -71,8 +114,21 @@ def calculate_embedding(text, tokenizer, model):
     return np.mean(chunk_embeddings, axis=0)
 
 
-# Main function to parallelize embedding calculation
-def get_embeddings(df, text_columns, n_workers=4, batch_size=32):
+def get_embeddings(
+    df: pd.DataFrame, text_columns: list, n_workers: int = 4, batch_size: int = 32
+) -> pd.DataFrame:
+    """
+    Generate embeddings for text columns in parallel using multiple worker processes.
+
+    Args:
+        df (pd.DataFrame): Input DataFrame containing text columns.
+        text_columns (list): List of column names containing text to be embedded.
+        n_workers (int, optional): Number of parallel worker processes. Defaults to 4.
+        batch_size (int, optional): Batch size for processing texts. Defaults to 32.
+
+    Returns:
+        pd.DataFrame: DataFrame with added embeddings column.
+    """
     # Split the DataFrame into chunks
     chunks = np.array_split(df, n_workers)
     # Create tuple of (chunk, text_columns, batch_size) for each worker
@@ -91,7 +147,16 @@ def get_embeddings(df, text_columns, n_workers=4, batch_size=32):
     return pd.concat(results, ignore_index=True)
 
 
-def preprocessing(df):
+def preprocessing(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Preprocess the DataFrame by handling duplicates, non-string values, and missing categories.
+
+    Args:
+        df (pd.DataFrame): Input DataFrame to preprocess.
+
+    Returns:
+        pd.DataFrame: Preprocessed DataFrame with cleaned and standardized values.
+    """
     df = df.drop_duplicates()
     columns_to_remove_non_strings = [
         "Description",
@@ -100,19 +165,35 @@ def preprocessing(df):
         "Website",
     ]
     columns_to_convert_to_strings = ["Name", "Top Level Category", "Secondary Category"]
+
+    # Convert non-string values to empty strings in text columns
     df[columns_to_remove_non_strings] = df[columns_to_remove_non_strings].map(
         lambda x: x if isinstance(x, str) else ""
     )
+
+    # Convert specified columns to strings
     df[columns_to_convert_to_strings] = df[columns_to_convert_to_strings].map(
         lambda x: str(x)
     )
+
+    # Replace missing categories with 'N/A'
     categories = ["Top Level Category", "Secondary Category"]
     df[categories] = df[categories].replace(to_replace=[None, ""], value="N/A")
     return df
 
 
-def calculate_similarity(embedding1, embedding2):
-    # Remove the eval() since embeddings are already numpy arrays
+def calculate_similarity(embedding1: np.ndarray, embedding2: np.ndarray) -> float:
+    """
+    Calculate cosine similarity between two embedding vectors.
+
+    Args:
+        embedding1 (np.ndarray): First embedding vector.
+        embedding2 (np.ndarray): Second embedding vector.
+
+    Returns:
+        float: Cosine similarity score between the two embeddings.
+    """
+    # Convert inputs to numpy arrays if needed
     embedding_1 = (
         embedding1 if isinstance(embedding1, np.ndarray) else np.array(embedding1)
     )
@@ -130,7 +211,15 @@ def calculate_similarity(embedding1, embedding2):
     return similarity
 
 
-def data_pipeline(file_path, text_columns):
+def data_pipeline(file_path: str, text_columns: list) -> None:
+    """
+    Main data processing pipeline that loads data, preprocesses it, generates embeddings,
+    and saves the result.
+
+    Args:
+        file_path (str): Path to the input Excel file.
+        text_columns (list): List of column names containing text to be embedded.
+    """
     df = ingest_data(file_path)
     print(df.info())
     df = preprocessing(df)
