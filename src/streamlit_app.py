@@ -26,11 +26,26 @@ def load_model():
 @st.cache_data
 def load_data():
     try:
-        if not os.path.exists("output.pkl"):
-            st.error("Data file 'output.pkl' not found!")
-            return None, None, None
+        # Check if 'output.pkl' exists; if not, attempt to combine parts
+        if os.path.exists("part1.pkl") and os.path.exists("part2.pkl"):
 
-        df = pd.read_pickle("output.pkl")
+            # Load part1.pkl and part2.pkl
+            part1 = pd.read_pickle("part1.pkl")
+            part2 = pd.read_pickle("part2.pkl")
+
+            # Combine the DataFrames
+            df = pd.concat([part1, part2], axis=0)
+
+            # Save combined DataFrame as 'output.pkl' for future use
+            df.to_pickle("output.pkl")
+            st.success(
+                "Successfully combined 'part1.pkl' and 'part2.pkl' into 'output.pkl'."
+            )
+        else:
+            st.error(
+                "Data file 'output.pkl' not found, and parts 'part1.pkl'/'part2.pkl' are missing!"
+            )
+            return None, None, None
 
         # Check if required columns exist
         required_columns = [
@@ -47,13 +62,13 @@ def load_data():
         # Handle missing values in Top Level Category
         df["Top Level Category"] = df["Top Level Category"].fillna("Uncategorized")
 
-        # Precompute company info for dropdowns
         company_info = df[["Organization Id", "Name", "Top Level Category"]].to_dict(
             "records"
         )
         categories = ["All"] + sorted(df["Top Level Category"].unique().tolist())
 
         return df, company_info, categories
+
     except Exception as e:
         st.error(f"Error loading data: {str(e)}")
         return None, None, None
