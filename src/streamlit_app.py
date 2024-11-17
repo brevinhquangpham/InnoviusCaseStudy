@@ -16,7 +16,7 @@ Dependencies:
     - scikit-learn
     - plotly
 
-Author: Brevin Pham
+Author: Brevinh Pham
 Date: 2024
 """
 
